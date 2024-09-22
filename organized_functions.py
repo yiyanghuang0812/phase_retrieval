@@ -1,8 +1,5 @@
 "The functions in this file all come from 'phase_retrieval.py'."
 
-
-
-
 # This function is to get the type of the hardware used by computation.
 def get_array_module(arr):
     if cp is not None: # determine if the system imports 'cupy'
@@ -76,6 +73,9 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
             amp0[0] = 1 # piston
             ph0 = np.zeros(len(modes)) # 0 phase
             init_params = np.concatenate([amp0, ph0], axis=0) # 1D intensity + phase
+
+
+
 
 
     # compute weights?
@@ -216,4 +216,3 @@ def get_han2d_sq(N, fraction=1. / np.sqrt(2), normalize=False):
     return xp.outer(window, window)
 
 
-get_han2d_sq(Imeas[0].shape[0], fraction=0.7)
