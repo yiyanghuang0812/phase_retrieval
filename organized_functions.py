@@ -55,10 +55,16 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
 
 
 
-# Imeas: intensity maps on the image planes.
-# fitmask: the mask at the pupil plane. It indicates the pupil region.
-# init_params: initial values of the to-be-fitted coefficients.
+# Imeas: x * M * M intensity maps on the image planes.
+# fitmask: N * N matrix representing the mask at the pupil plane. It indicates the pupil region.
+# tol:
+# reg:
+# wreg: the parameter used to prevent infinite weights calculated from the reciprocal of 0 intensity.
+# Eprobes: x * N * N tensor showing the extra wavefront at the pupil introduced by the defocus.
+# init_params: initial values of the to-be-fitted coefficients. It's a vector.
+# bounds: indicate if we need to set boundaries for fitting coefficients. It should be either 'True' or 'False'.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
+# fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
 def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=None, bounds=True, modes=None, fit_amp=True):
     xp = get_array_module(Imeas) # get the type of the hardware used by computation
     if modes is None: # determine the method used to fit the wavefront at the pupil
@@ -68,30 +74,22 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
     # Initialize to-be-fitted coefficients if they were not given.
     if init_params is None:
         if modes is None:
-            fitsmooth = gauss_convolve(binary_erosion(fitmask, iterations=3), 3) # blur the mask after implementing image erosion. It simulates the actual pupil intensity.
-            init_params = np.concatenate([fitsmooth[fitmask], fitsmooth[fitmask]*0], axis=0) # extract pupil intensity points and give the same number of 0 phase points
+            fitsmooth = gauss_convolve(binary_erosion(fitmask, iterations=3), 3) # blur the mask after implementing image erosion. It simulates the actual pupil amplitude.
+            init_params = np.concatenate([fitsmooth[fitmask], fitsmooth[fitmask]*0], axis=0) # extract pupil amplitude points and give the same number of 0 phase points
         else:
-            amp0 = np.zeros(len(modes)) # intensity
+            amp0 = np.zeros(len(modes)) # amplitude
             amp0[0] = 1 # piston
             ph0 = np.zeros(len(modes)) # 0 phase
-            init_params = np.concatenate([amp0, ph0], axis=0) # 1D intensity + phase
-
-
-
-
-
-    # compute weights?
-    weights = 1/(Imeas + wreg) * get_han2d_sq(Imeas[0].shape[0], fraction=0.7)
-    weights /= np.max(weights,axis=(-2,-1))[:,None,None]
-
+            init_params = np.concatenate([amp0, ph0], axis=0) # 1D amplitude + phase
+    # Give weights for fitting data. It's an x * M * M tensor.
+    weights = 1/(Imeas + wreg) * get_han2d_sq(Imeas[0].shape[0], fraction=0.7) # the reciprocal of the amplitude weakens the impact of the central region, while the Hanning window restricts the scope and adjusts the weights
+    weights /= np.max(weights,axis=(-2,-1))[:,None,None] # normalization
+    # Give fitting boundaries for the to-be-fitted coefficients.
     if bounds:
-        bounds = [(0,None),]*N + [(None,None),]*N
+        bounds = [(0,None),]*N + [(None,None),]*N # 0 is the lower boundary for the amplitude
     else:
         bounds = None
-
-    # get probes
-
-    # force all to right kind of array (numpy or cupy)
+    # Force all previous data to right kinds of arrays.
     Eprobes = xp.asarray(Eprobes, dtype=xp.complex128)
     Imeas = xp.asarray(Imeas, dtype=xp.float64)
     weights = xp.asarray(weights, dtype=xp.float64)
@@ -100,12 +98,15 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
         modes_cp = xp.asarray(modes)
     else:
         modes_cp = None
-
+    # Fit the coefficients.
     if not fit_amp:
-        init_params = init_params[N:]
+        init_params = init_params[N:] # just keep the phase part
         bounds = bounds[N:]
 
-    errfunc = get_sqerr_grad
+
+
+
+    errfunc = get_sqerr_grad # get the error function
     fitdict = minimize(errfunc, init_params, args=(fitmask_cp, fitmask_cp,
                         Eprobes, weights, Imeas, N, reg, modes_cp, fit_amp),
                         method='L-BFGS-B', jac=True, bounds=bounds,
@@ -197,24 +198,88 @@ def ifft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
         t = cp.fft.ifft2(ishiftfunc(image, axes=axes), axes=axes, norm=norm)
         return shiftfunc(t, axes=axes)
 
-
-
-
-
-def get_han2d_sq(N, fraction=1. / np.sqrt(2), normalize=False):
-
-    '''
-    Radial Hanning window scaled to a fraction
-    of the array size.
-    Fraction = 1. for circumscribed circle
-    Fraction = 1/sqrt(2) for inscribed circle (default)
-    '''
-
+# This function gives a Hanning window for smoothing the image.
+# N: side length of the mask.
+# fraction: the coverage ratio of the Hanning window in a single direction. 1 for the inscribed circle (default); sqrt(2) for the circumscribed circle.
+def get_han2d_sq(N, fraction=1.):
     x = xp.linspace(-N / 2., N / 2., num=N)
-    rmax = N * fraction
+    rmax = N / 2. * fraction # radius of the Hanning window
     scaled = (1 - x / rmax) * xp.pi / 2.
-    window = xp.sin(scaled) ** 2
+    window = xp.sin(scaled) ** 2 # 1D
     window[xp.abs(x) > rmax] = 0
-    return xp.outer(window, window)
+    return xp.outer(window, window) # 2D
+
+
+def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, modes, fit_amp):
+    xp = get_array_module(Eprobes)
+
+    # CPU to GPU if needed
+    if xp is cp and isinstance(params, np.ndarray):
+        params = cp.array(params)
+
+    # params to wavefront
+    # param_a = params[0]
+    if fit_amp:
+        params_amp = params[:N]
+        params_phase = params[N:]
+    else:
+        params_amp = np.ones(N)
+        params_phase = params[:N]
+
+    # Eab = xp.zeros(mask.shape, dtype=complex)
+    A = xp.zeros(mask.shape)
+    phi = xp.zeros(mask.shape)
+    if modes is None:
+        A[mask] = params_amp
+        phi[mask] = params_phase
+    else:
+        if fit_amp:
+            A = xp.sum(modes * params_amp[:, None, None], axis=0)
+        else:
+            A = pupil.astype(float)
+        phi = xp.sum(modes * params_phase[:, None, None], axis=0)
+
+    # probe
+    # Eprobes = np.exp(1j*param_a*phiprobes)
+
+    Eab = A * np.exp(1j * phi)
+    # Eab[mask] = params_re + 1j*params_im
+
+    # print(A.max(), phi.max())
+
+    # forward model
+    Imodel, Efocals, Epupils = forward_model(pupil, Eprobes, Eab)
+    # return Imodel
+
+    # lsq error
+    # err = np.sum(weights * np.sqrt( (Imodel - Imeas)**2 ))
+    err = get_err(Imeas, Imodel, weights) + lambdap * xp.sum(params ** 2)
+
+    # gradient
+    if fit_amp:
+        gradA, gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, Eab, A, phi, weights, pupil, fit_amp=True)  # [mask]
+
+        if modes is None:
+            grad_Aphi = xp.concatenate([  # cp.asarray([grada,]),
+                gradA[mask], gradphi[mask]], axis=0) + 2 * lambdap * params
+        else:
+            gradAmodal = xp.sum(gradA * modes, axis=(-2, -1))
+            gradphimodal = xp.sum(gradphi * modes, axis=(-2, -1))
+            grad_Aphi = xp.concatenate([gradAmodal, gradphimodal], axis=0) + 2 * lambdap * params
+    else:
+        gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, Eab, A, phi, weights, pupil, fit_amp=False)
+
+        if modes is None:
+            grad_Aphi = gradphi[mask] + 2 * lambdap * params
+        else:
+            gradphimodal = xp.sum(gradphi * modes, axis=(-2, -1))
+            grad_Aphi = gradphimodal + 2 * lambdap * params
+
+    # back to CPU
+    if xp is cp:
+        err = cp.asnumpy(err)
+        grad_Aphi = cp.asnumpy(grad_Aphi)
+
+    return err, grad_Aphi
 
 
