@@ -210,6 +210,9 @@ def get_han2d_sq(N, fraction=1.):
     return xp.outer(window, window) # 2D
 
 
+
+
+
 def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, modes, fit_amp):
     xp = get_array_module(Eprobes)
 
@@ -281,5 +284,58 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
         grad_Aphi = cp.asnumpy(grad_Aphi)
 
     return err, grad_Aphi
+
+
+# Imeas:
+# Imodel:
+# weights:
+def get_err(Imeas, Imodel, weights):
+    xp = get_array_module(Imeas)
+    K = len(weights)
+    t1 = xp.sum(weights * Imodel * Imeas, axis=(-2,-1))**2
+    t2 = xp.sum(weights * Imeas**2, axis=(-2,-1))
+    t3 = xp.sum(weights * Imodel**2, axis=(-2,-1))
+    return 1 - 1/K * np.sum(t1/(t2*t3), axis=0)
+
+
+
+# Imeas:
+# Imodel:
+# Efocals:
+# Eprobes:
+def get_grad(Imeas, Imodel, Efocals, Eprobes, Eab, A, phi, weights, pupil, fit_amp=True):
+    xp = get_array_module(Imeas)
+
+    # common gradient terms
+    Ibar = get_Ibar_model(Imeas, Imodel, weights)
+    Ehatbar = 2 * Efocals * Ibar
+    Ebar = ifft2_shiftnorm(Ehatbar, axes=(-2, -1))
+
+    # --- get Eab ---
+    Eabbar = Ebar * Eprobes.conj()
+    # get amplitude
+    expiphi = np.exp(1j * phi)
+    Abar = Eabbar * expiphi.conj()
+    # get phase
+    expiphibar = Eabbar * A
+    phibar = xp.imag(expiphibar * expiphi.conj())
+
+    # sum terms (better be purely real, should double check this!!!)
+    gradA = xp.sum(Abar, axis=0).real
+    gradphi = xp.sum(phibar, axis=0).real
+
+    if fit_amp:
+        return gradA, gradphi
+    else:
+        return gradphi
+
+
+def get_Ibar_model(Imeas, Imodel, weights):
+    xp = get_array_module(Imeas)
+    K = len(weights)
+    t1 = xp.sum(weights * Imodel * Imeas, axis=(-2,-1))[:,None,None]
+    t2 = xp.sum(weights * Imeas**2, axis=(-2,-1))[:,None,None]
+    t3 = xp.sum(weights * Imodel**2, axis=(-2,-1))[:,None,None]
+    return 2/K * weights * t1 / (t2 * t3**2) * (Imodel * t1 - Imeas * t3)
 
 
