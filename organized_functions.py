@@ -18,7 +18,7 @@ def get_defocus_probes(fitmask, vals_waves):
 
 # This function is used to calculate the wavefront and intensity maps on the image plane.
 # pupil: N * N binary matrix showing the pupil region.
-# probes: M * N * N tensor showing extra wavefronts introduced by different defocus magnitudes.
+# probes: x * N * N tensor showing extra wavefronts introduced by different defocus magnitudes.
 # wavefront: N * N matrix showing the extra wavefront introduced by the mirror shape error.
 def forward_model(pupil, probes, wavefront):
     xp = get_array_module(wavefront) # get the hardware used for data computation
@@ -55,7 +55,7 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
 
 
 
-# Imeas: x * M * M intensity maps on the image planes.
+# Imeas: x * M * M measured intensity maps on the image planes (PSFs).
 # fitmask: N * N matrix representing the mask at the pupil plane. It indicates the pupil region.
 # tol:
 # reg:
@@ -211,25 +211,29 @@ def get_han2d_sq(N, fraction=1.):
 
 
 
-
-
+# params: current values of the to-be-fitted coefficients. It's a vector.
+# pupil: N * N binary matrix showing the pupil region.
+# mask:
+# Eprobes: x * N * N tensor showing extra wavefronts introduced by different defocus magnitudes.
+# weights: determine the influences of different components in comparing the differences between the model result and measured result.
+# Imeas: x * M * M measured intensity maps on the image planes (PSFs).
+# N:
+# lambdap:
+# modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
+# fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
 def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, modes, fit_amp):
-    xp = get_array_module(Eprobes)
-
-    # CPU to GPU if needed
-    if xp is cp and isinstance(params, np.ndarray):
-        params = cp.array(params)
-
-    # params to wavefront
-    # param_a = params[0]
-    if fit_amp:
+    xp = get_array_module(Eprobes) # get the type of the hardware used by computation
+    if xp is cp and isinstance(params, np.ndarray): # if there's GPU and the to-be-fitted coefficients are saved in numpy array
+        params = cp.array(params) # convert coefficients to be in cupy array
+    if fit_amp: # if we need to fit the amplitude
         params_amp = params[:N]
         params_phase = params[N:]
     else:
-        params_amp = np.ones(N)
+        params_amp = np.ones(N) # if not, just set the amplitudes to constants
         params_phase = params[:N]
 
-    # Eab = xp.zeros(mask.shape, dtype=complex)
+
+
     A = xp.zeros(mask.shape)
     phi = xp.zeros(mask.shape)
     if modes is None:
