@@ -19,7 +19,7 @@ def get_defocus_probes(fitmask, vals_waves):
 # This function is used to calculate the wavefront and intensity maps on the image plane.
 # pupil: N * N binary matrix showing the pupil region.
 # probes: x * N * N tensor showing extra wavefronts introduced by different defocus magnitudes.
-# wavefront: N * N matrix showing the extra wavefront introduced by the mirror shape error.
+# wavefront: N * N matrix showing the wavefront introduced by the mirror shape error.
 def forward_model(pupil, probes, wavefront):
     xp = get_array_module(wavefront) # get the hardware used for data computation
     Epupils = pupil * wavefront * probes # layer-by-layer multiplication which obtains an M * N * N tensor showing the OPD at the pupil
@@ -57,11 +57,11 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
 
 # Imeas: x * M * M measured intensity maps on the image planes (PSFs).
 # fitmask: N * N matrix representing the mask at the pupil plane. It indicates the pupil region.
-# tol:
+# tol: tolerance used to terminate the iteration.
 # reg:
 # wreg: the parameter used to prevent infinite weights calculated from the reciprocal of 0 intensity.
 # Eprobes: x * N * N tensor showing the extra wavefront at the pupil introduced by the defocus.
-# init_params: initial values of the to-be-fitted coefficients. It's a vector.
+# init_params: initial values of the to-be-fitted parameters. It's a vector.
 # bounds: indicate if we need to set boundaries for fitting coefficients. It should be either 'True' or 'False'.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
@@ -75,7 +75,7 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
     if init_params is None:
         if modes is None:
             fitsmooth = gauss_convolve(binary_erosion(fitmask, iterations=3), 3) # blur the mask after implementing image erosion. It simulates the actual pupil amplitude.
-            init_params = np.concatenate([fitsmooth[fitmask], fitsmooth[fitmask]*0], axis=0) # extract pupil amplitude points and give the same number of 0 phase points
+            init_params = np.concatenate([fitsmooth[fitmask], fitsmooth[fitmask]*0], axis=0) # extract pupil amplitude ('True') points row by row and splice them into a 1D array, and give the same number of 0 phase points
         else:
             amp0 = np.zeros(len(modes)) # amplitude
             amp0[0] = 1 # piston
@@ -107,10 +107,19 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
 
 
     errfunc = get_sqerr_grad # get the error function
+    # This is used to minimize the output parameters (error and gradient) of the target function 'errfunc'.
+    # 'init_params' includes the parameters used in calculation of 'errfunc' in each iteration.
+    # 'args' includes all other input parameters required by 'errfunc'.
+    # 'method' shows the iteration method 'L-BFGS-B'. It supports the boundary constraints.
+    # 'jac' equals to 'True' means 'errfunc' will provide gradient in addition to error.
+    # 'bounds' shows the boundary constraints of 'init_params'.
+    # 'tol' is the tolerance. When the error is smaller than 'tol', the iteration will terminate.
+    # 'options' gives extra conditions for terminating the iteration. 'ftol': tolerance of the error difference in 2 adjacent iterations; 'gtol': tolerance of the norm of the gradient; 'maxls': maximum iteration times.
     fitdict = minimize(errfunc, init_params, args=(fitmask_cp, fitmask_cp,
                         Eprobes, weights, Imeas, N, reg, modes_cp, fit_amp),
                         method='L-BFGS-B', jac=True, bounds=bounds,
                         tol=tol, options={'ftol' : tol, 'gtol' : tol, 'maxls' : 100})
+
 
     # construct amplitude and phase
     phase_est = np.zeros(fitmask.shape)
@@ -211,48 +220,43 @@ def get_han2d_sq(N, fraction=1.):
 
 
 
-# params: current values of the to-be-fitted coefficients. It's a vector.
-# pupil: N * N binary matrix showing the pupil region.
-# mask:
-# Eprobes: x * N * N tensor showing extra wavefronts introduced by different defocus magnitudes.
+# params: current values of the to-be-fitted parameters. It's a vector.
+# pupil: P * P binary matrix showing the pupil region.
+# mask: P * P binary mask showing the pupil region.
+# Eprobes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
 # weights: determine the influences of different components in comparing the differences between the model result and measured result.
-# Imeas: x * M * M measured intensity maps on the image planes (PSFs).
-# N:
+# Imeas: x * H * H measured intensity maps on the image planes (PSFs).
+# N: number of to-be-fitted parameters.
 # lambdap:
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
 def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, modes, fit_amp):
     xp = get_array_module(Eprobes) # get the type of the hardware used by computation
+    # 
     if xp is cp and isinstance(params, np.ndarray): # if there's GPU and the to-be-fitted coefficients are saved in numpy array
         params = cp.array(params) # convert coefficients to be in cupy array
     if fit_amp: # if we need to fit the amplitude
-        params_amp = params[:N]
+        params_amp = params[:N] # split the data
         params_phase = params[N:]
     else:
         params_amp = np.ones(N) # if not, just set the amplitudes to constants
         params_phase = params[:N]
-
-
-
-    A = xp.zeros(mask.shape)
-    phi = xp.zeros(mask.shape)
+    A = xp.zeros(mask.shape) # amplitude map
+    phi = xp.zeros(mask.shape) # phase map
     if modes is None:
-        A[mask] = params_amp
-        phi[mask] = params_phase
+        A[mask] = params_amp # give the non-zero points of 'mask' in 'A' the values of 'params_amp' row by row
+        phi[mask] = params_phase # do the same thing to phase 'phi'
     else:
         if fit_amp:
-            A = xp.sum(modes * params_amp[:, None, None], axis=0)
+            A = xp.sum(modes * params_amp[:, None, None], axis=0) # use 'params_amp' and Zernike polynomials in 'modes' to calculate 'A'
         else:
-            A = pupil.astype(float)
-        phi = xp.sum(modes * params_phase[:, None, None], axis=0)
+            A = pupil.astype(float) # convert 'pupil' to float data and give it to 'A'
+        phi = xp.sum(modes * params_phase[:, None, None], axis=0) # do the same thing to phase 'phi'
+    Eab = A * np.exp(1j * phi) # mirror shape error (wavefront) predicted by the last iteration
 
-    # probe
-    # Eprobes = np.exp(1j*param_a*phiprobes)
 
-    Eab = A * np.exp(1j * phi)
-    # Eab[mask] = params_re + 1j*params_im
 
-    # print(A.max(), phi.max())
+
 
     # forward model
     Imodel, Efocals, Epupils = forward_model(pupil, Eprobes, Eab)
