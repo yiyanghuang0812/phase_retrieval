@@ -57,11 +57,11 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
 
 # Imeas: x * M * M measured intensity maps on the image planes (PSFs).
 # fitmask: N * N matrix representing the mask at the pupil plane. It indicates the pupil region.
-# tol: tolerance used to terminate the iteration.
+# tol: the parameter showing the tolerance used to terminate the iteration.
 # reg:
 # wreg: the parameter used to prevent infinite weights calculated from the reciprocal of 0 intensity.
 # Eprobes: x * N * N tensor showing the extra wavefront at the pupil introduced by the defocus.
-# init_params: initial values of the to-be-fitted parameters. It's a vector.
+# init_params: initial values of the to-be-fitted parameters. It's a vector. Its length is either the pixel number of the pupil region or the number of Zernike terms.
 # bounds: indicate if we need to set boundaries for fitting coefficients. It should be either 'True' or 'False'.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
@@ -219,20 +219,20 @@ def get_han2d_sq(N, fraction=1.):
     return xp.outer(window, window) # 2D
 
 
-
-# params: current values of the to-be-fitted parameters. It's a vector.
+# This function is used to calculate the error and gradient for the iteration.
+# params: current values of the to-be-fitted parameters. It's a vector. Its length is either the pixel number of the pupil region or the number of Zernike terms.
 # pupil: P * P binary matrix showing the pupil region.
 # mask: P * P binary mask showing the pupil region.
 # Eprobes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
-# weights: determine the influences of different components in comparing the differences between the model result and measured result.
+# weights: x * H * H tensor determining the influences of different components in comparing the differences between the model result and measured result.
 # Imeas: x * H * H measured intensity maps on the image planes (PSFs).
 # N: number of to-be-fitted parameters.
-# lambdap:
+# lambdap: the constant controlling the strength of regularization penalty to avoid overfitting in error and gradient.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
 def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, modes, fit_amp):
     xp = get_array_module(Eprobes) # get the type of the hardware used by computation
-    # 
+    # Use current values of the to-be-fitted parameters to generate the wavefront at the pupil.
     if xp is cp and isinstance(params, np.ndarray): # if there's GPU and the to-be-fitted coefficients are saved in numpy array
         params = cp.array(params) # convert coefficients to be in cupy array
     if fit_amp: # if we need to fit the amplitude
@@ -253,22 +253,17 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
             A = pupil.astype(float) # convert 'pupil' to float data and give it to 'A'
         phi = xp.sum(modes * params_phase[:, None, None], axis=0) # do the same thing to phase 'phi'
     Eab = A * np.exp(1j * phi) # mirror shape error (wavefront) predicted by the last iteration
-
-
-
-
-
-    # forward model
+    # Use the forward model, pupil wavefront and defocus wavefronts to calculate the PSFs on the image planes.
     Imodel, Efocals, Epupils = forward_model(pupil, Eprobes, Eab)
-    # return Imodel
-
-    # lsq error
-    # err = np.sum(weights * np.sqrt( (Imodel - Imeas)**2 ))
+    # Calculate the error. 'lambdap * xp.sum(params ** 2)' is the L2 regularization term, which penalizes the large parameter values, effectively reducing the overfitting risk. 'lambdap' controls the strength of regularization penalty.
     err = get_err(Imeas, Imodel, weights) + lambdap * xp.sum(params ** 2)
+
+
+
 
     # gradient
     if fit_amp:
-        gradA, gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, Eab, A, phi, weights, pupil, fit_amp=True)  # [mask]
+        gradA, gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, A, phi, weights, fit_amp=True)  # [mask]
 
         if modes is None:
             grad_Aphi = xp.concatenate([  # cp.asarray([grada,]),
@@ -278,7 +273,7 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
             gradphimodal = xp.sum(gradphi * modes, axis=(-2, -1))
             grad_Aphi = xp.concatenate([gradAmodal, gradphimodal], axis=0) + 2 * lambdap * params
     else:
-        gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, Eab, A, phi, weights, pupil, fit_amp=False)
+        gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, A, phi, weights, fit_amp=False)
 
         if modes is None:
             grad_Aphi = gradphi[mask] + 2 * lambdap * params
@@ -294,24 +289,35 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
     return err, grad_Aphi
 
 
-# Imeas:
-# Imodel:
-# weights:
+# !!!
+# This function is used to calculate the error between the predicted PSFs and measured PSFs. It comes from Eq. (12) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.
+# Imeas: x * H * H measured PSFs.
+# Imodel: x * H * H predicted PSFs from the forward model.
+# weights: x * H * H tensor determining the influences of different components in comparing the differences between the model result and measured result.
 def get_err(Imeas, Imodel, weights):
     xp = get_array_module(Imeas)
     K = len(weights)
     t1 = xp.sum(weights * Imodel * Imeas, axis=(-2,-1))**2
     t2 = xp.sum(weights * Imeas**2, axis=(-2,-1))
     t3 = xp.sum(weights * Imodel**2, axis=(-2,-1))
-    return 1 - 1/K * np.sum(t1/(t2*t3), axis=0)
+    return 1 - 1/K * np.sum(t1/(t2*t3), axis=0) # Eq. (12)
 
 
 
-# Imeas:
-# Imodel:
-# Efocals:
-# Eprobes:
-def get_grad(Imeas, Imodel, Efocals, Eprobes, Eab, A, phi, weights, pupil, fit_amp=True):
+
+# !!!
+# This function is used to calculate the gradient of error for the following iteration. It comes from Eq. (A1) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.
+# Imeas: x * H * H measured PSFs.
+# Imodel: x * H * H predicted PSFs from the forward model.
+# Efocals: 
+# Eprobes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
+
+# mirror shape error (wavefront) predicted by the last iteration
+# amplitude map
+# phase map
+# weights: x * H * H tensor determining the influences of different components in comparing the differences between the model result and measured result.
+# fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
+def get_grad(Imeas, Imodel, Efocals, Eprobes, A, phi, weights, fit_amp=True):
     xp = get_array_module(Imeas)
 
     # common gradient terms
