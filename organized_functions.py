@@ -10,29 +10,29 @@ def get_array_module(arr):
         return np
 
 # This function is used to get the extra wavefront at the pupil introduced by the defocus.
-# fitmask: binary matrix showing the pupil region.
+# fitmask: P * P binary matrix showing the pupil region.
 # vals_waves: 1 x N vector showing defocus magnitudes in waves.
 def get_defocus_probes(fitmask, vals_waves):
     zmodes = zernike.arbitrary_basis(fitmask, nterms=4, outside=0) # give the bases of the first 4 zernike polynomials inside 'fitmask', and set the data outside the mask to be 0
     return cp.exp(1j*zmodes[-1]*2*cp.pi*cp.asarray(vals_waves)[:,None,None]) # the map having data equal to e^(j2πn*defocus_phase)
 
 # This function is used to calculate the wavefront and intensity maps on the image plane.
-# pupil: N * N binary matrix showing the pupil region.
-# probes: x * N * N tensor showing extra wavefronts introduced by different defocus magnitudes.
-# wavefront: N * N matrix showing the wavefront introduced by the mirror shape error.
+# pupil: P * P binary matrix showing the pupil region.
+# probes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
+# wavefront: P * P matrix showing the wavefront introduced by the mirror shape error.
 def forward_model(pupil, probes, wavefront):
     xp = get_array_module(wavefront) # get the hardware used for data computation
-    Epupils = pupil * wavefront * probes # layer-by-layer multiplication which obtains an M * N * N tensor showing the OPD at the pupil
+    Epupils = pupil * wavefront * probes # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
     Epupils /= xp.mean(xp.abs(Epupils),axis=(-2,-1))[:,None,None] # divide pupil data by the mean of each layer for normalization
     Efocals = fft2_shiftnorm(Epupils, axes=(-2,-1)) # wavefront at the image plane
     Ifocals = xp.abs(Efocals)**2 # intensity at the image plane
     return Ifocals, Efocals, Epupils
 
 # This function is used to do Fast Fourier Transform for the image.
-# image: it's usually the wavefront at the pupil.
-# axes: the dimensions that implement FFT.
-# norm: normalization method. The default choice is orthogonal.
-# shift: indicate if the image needs to be shifted for the FFT.
+# image: it's usually a P * P matrix showing the wavefront at the pupil.
+# axes: the dimensions that implement FFT. Default choice 'None' equals to (-2, -1).
+# norm: normalization method. The default choice is orthogonal. Default choice is 'ortho'.
+# shift: indicate if the image needs to be shifted for the FFT. The default is 'True'.
 def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
     if axes is None:
         axes = (-2, -1) # the last 2 dimensions
@@ -55,12 +55,12 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
 
 
 
-# Imeas: x * M * M measured intensity maps on the image planes (PSFs).
-# fitmask: N * N matrix representing the mask at the pupil plane. It indicates the pupil region.
+# Imeas: x * H * H measured intensity maps on the image planes (PSFs).
+# fitmask: P * P matrix representing the mask at the pupil plane. It indicates the pupil region.
 # tol: the parameter showing the tolerance used to terminate the iteration.
 # reg:
 # wreg: the parameter used to prevent infinite weights calculated from the reciprocal of 0 intensity.
-# Eprobes: x * N * N tensor showing the extra wavefront at the pupil introduced by the defocus.
+# Eprobes: x * P * P tensor showing the extra wavefront at the pupil introduced by the defocus.
 # init_params: initial values of the to-be-fitted parameters. It's a vector. Its length is either the pixel number of the pupil region or the number of Zernike terms.
 # bounds: indicate if we need to set boundaries for fitting coefficients. It should be either 'True' or 'False'.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
@@ -81,7 +81,7 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
             amp0[0] = 1 # piston
             ph0 = np.zeros(len(modes)) # 0 phase
             init_params = np.concatenate([amp0, ph0], axis=0) # 1D amplitude + phase
-    # Give weights for fitting data. It's an x * M * M tensor.
+    # Give weights for fitting data. It's an x * H * H tensor.
     weights = 1/(Imeas + wreg) * get_han2d_sq(Imeas[0].shape[0], fraction=0.7) # the reciprocal of the amplitude weakens the impact of the central region, while the Hanning window restricts the scope and adjusts the weights
     weights /= np.max(weights,axis=(-2,-1))[:,None,None] # normalization
     # Give fitting boundaries for the to-be-fitted coefficients.
@@ -114,7 +114,7 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
     # 'jac' equals to 'True' means 'errfunc' will provide gradient in addition to error.
     # 'bounds' shows the boundary constraints of 'init_params'.
     # 'tol' is the tolerance. When the error is smaller than 'tol', the iteration will terminate.
-    # 'options' gives extra conditions for terminating the iteration. 'ftol': tolerance of the error difference in 2 adjacent iterations; 'gtol': tolerance of the norm of the gradient; 'maxls': maximum iteration times.
+    # 'options' gives extra tolerances for terminating the iteration. 'ftol': tolerance of the error difference in 2 adjacent iterations; 'gtol': tolerance of the norm of the gradient; 'maxls': maximum iteration times.
     fitdict = minimize(errfunc, init_params, args=(fitmask_cp, fitmask_cp,
                         Eprobes, weights, Imeas, N, reg, modes_cp, fit_amp),
                         method='L-BFGS-B', jac=True, bounds=bounds,
@@ -150,9 +150,9 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
 
 
 # This function implements gaussian blur in frequency domain.
-# image: the image that is going to be blurred.
-# sigma: indicate the gaussian distribution width for the image blur.
-# force_real: determine if we need to remove the imaginary part of the obtained blurred image.
+# image: the P * P image that is going to be blurred.
+# sigma: the parameter showing the gaussian distribution width for the image blur.
+# force_real: determine if we need to remove the imaginary part of the obtained blurred image. The default is 'True'.
 def gauss_convolve(image, sigma, force_real=True):
     if cp is not None: # determine the hardware used for calculation
         xp = cp.get_array_module(image)
@@ -162,10 +162,10 @@ def gauss_convolve(image, sigma, force_real=True):
     return convolve_fft(image, g, force_real=force_real) # blur the image in frequency domain and keep the real part
 
 # This function generates the gaussian kernel used for image blur.
-# sigma: standard deviation (width) of the gaussian distribution.
+# sigma: the parameter showing the standard deviation (width) of the gaussian distribution.
 # shape: (rows, cols) showing numbers of rows and columns of the kernel.
 # cenyx: [y x] showing central coordinates of the gaussian distribution in the kernel.
-# xp: numpy or cupy that is used for calculation.
+# xp: numpy or cupy that is used for calculation. The default is 'np'.
 def get_gauss(sigma, shape, cenyx=None, xp=np):
     if cenyx is None:
         cenyx = xp.asarray([(shape[0])/2., (shape[1])/2.]) # central coordinates of the kernel
@@ -174,8 +174,8 @@ def get_gauss(sigma, shape, cenyx=None, xp=np):
     return g / xp.sum(g) # return the normalized gaussian kernel
 
 # This function is used to implement gaussian blur in frequency domain.
-# in1/in2: to-be-blurred image and gaussian kernel. They should have the same size.
-# force_real: determine if we need to remove the imaginary number.
+# in1/in2: P * P to-be-blurred image and gaussian kernel. They should have the same size.
+# force_real: determine if we need to remove the imaginary number. The default is 'False'.
 def convolve_fft(in1, in2, force_real=False):
     out = ifft2_shiftnorm(fft2_shiftnorm(in1,norm=None)*fft2_shiftnorm(in2,norm=None),norm=None) # gaussian blur in frequency domain
     if force_real:
@@ -184,10 +184,10 @@ def convolve_fft(in1, in2, force_real=False):
         return out
 
 # This function is used to do inverse Fast Fourier Transform for the image.
-# image: to-be-transformed image.
-# axes: the dimensions that implement FFT.
-# norm: normalization method. The default choice is orthogonal normalization.
-# shift: indicate if the image needs to be shifted for the FFT.
+# image: P * P to-be-transformed image.
+# axes: the dimensions that implement FFT. Default choice 'None' equals to (-2, -1).
+# norm: normalization method. The default choice is orthogonal normalization 'ortho'.
+# shift: indicate if the image needs to be shifted for the FFT. The default is 'True'.
 def ifft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
     if axes is None:
         axes = (-2, -1) # the last 2 dimensions
