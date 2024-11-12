@@ -53,8 +53,8 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
         return shiftfunc(t, axes=axes)
 
 
-# ???
-# This function is used to estimate the
+
+# This function is used to estimate the wavefront error at the pupil plane.
 # Imeas: x * H * H measured intensity maps on the image planes (PSFs).
 # fitmask: P * P matrix representing the mask at the pupil plane. It indicates the pupil region.
 # tol: the parameter showing the tolerance used to terminate the iteration.
