@@ -53,12 +53,12 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
         return shiftfunc(t, axes=axes)
 
 
-
-
+# ???
+# This function is used to estimate the
 # Imeas: x * H * H measured intensity maps on the image planes (PSFs).
 # fitmask: P * P matrix representing the mask at the pupil plane. It indicates the pupil region.
 # tol: the parameter showing the tolerance used to terminate the iteration.
-# reg:
+# reg: the constant controlling the strength of regularization penalty to avoid overfitting in error and gradient.
 # wreg: the parameter used to prevent infinite weights calculated from the reciprocal of 0 intensity.
 # Eprobes: x * P * P tensor showing the extra wavefront at the pupil introduced by the defocus.
 # init_params: initial values of the to-be-fitted parameters. It's a vector. Its length is either the pixel number of the pupil region or the number of Zernike terms.
@@ -306,15 +306,13 @@ def get_err(Imeas, Imodel, weights):
 
 
 # !!!
-# This function is used to calculate the gradient of error for the following iteration. It comes from Eq. (A1) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.
+# This function is used to calculate the gradient of the error for the following iteration. The primary component comes from Eq. (A1) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.
 # Imeas: x * H * H measured PSFs.
-# Imodel: x * H * H predicted PSFs from the forward model.
-# Efocals: 
+# Imodel: x * H * H predicted PSFs (intensity of the wavefront) from the forward model.
+# Efocals: x * H * H predicted wavefront from the forward model.
 # Eprobes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
-
-# mirror shape error (wavefront) predicted by the last iteration
-# amplitude map
-# phase map
+# A: x * P * P tensor showing the amplitude maps predicted by the last iteration.
+# phi: x * P * P tensor showing the phase maps predicted by the last iteration.
 # weights: x * H * H tensor determining the influences of different components in comparing the differences between the model result and measured result.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
 def get_grad(Imeas, Imodel, Efocals, Eprobes, A, phi, weights, fit_amp=True):
@@ -343,13 +341,17 @@ def get_grad(Imeas, Imodel, Efocals, Eprobes, A, phi, weights, fit_amp=True):
     else:
         return gradphi
 
-
+# !!!
+# This function is used to calculate the gradient of the error. It comes from Eq. (A1) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.
+# Imeas: x * H * H measured PSFs.
+# Imodel: x * H * H predicted PSFs from the forward model.
+# weights: x * H * H tensor determining the influences of different components in comparing the differences between the model result and measured result.
 def get_Ibar_model(Imeas, Imodel, weights):
     xp = get_array_module(Imeas)
     K = len(weights)
     t1 = xp.sum(weights * Imodel * Imeas, axis=(-2,-1))[:,None,None]
     t2 = xp.sum(weights * Imeas**2, axis=(-2,-1))[:,None,None]
     t3 = xp.sum(weights * Imodel**2, axis=(-2,-1))[:,None,None]
-    return 2/K * weights * t1 / (t2 * t3**2) * (Imodel * t1 - Imeas * t3)
+    return 2/K * weights * t1 / (t2 * t3**2) * (Imodel * t1 - Imeas * t3) # Eq. (A1)
 
 
