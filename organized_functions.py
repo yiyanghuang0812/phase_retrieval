@@ -1,6 +1,33 @@
 "The functions in this file all come from 'phase_retrieval.py'."
 
 
+import numpy as np
+import numpy as cp  # no GPU, so it's been changed from 'import cupy as cp'
+import matplotlib.pyplot as plt
+
+import hcipy as hp
+import poppy as pp
+# import matlab.engine as mat
+from scipy.ndimage import gaussian_filter
+from skimage.transform import resize, downscale_local_mean
+from skimage.filters import threshold_otsu
+from copy import deepcopy
+
+from functools import partial
+import multiprocessing as mp
+from time import sleep
+
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('fdpr2')
+
+
+from scipy.optimize import minimize
+from scipy.ndimage import binary_erosion #, shift, center_of_mass
+from poppy import zernike
+
+
+
 
 # This function is to get the type of the hardware used by computation.
 def get_array_module(arr):
@@ -31,7 +58,7 @@ def forward_model(pupil, probes, wavefront):
 # This function is used to do Fast Fourier Transform for the image.
 # image: it's usually a P * P matrix showing the wavefront at the pupil.
 # axes: the dimensions that implement FFT. Default choice 'None' equals to (-2, -1).
-# norm: normalization method. The default choice is orthogonal. Default choice is 'ortho'.
+# norm: normalization method. The default choice is orthogonal. It is 'ortho'.
 # shift: indicate if the image needs to be shifted for the FFT. The default is 'True'.
 def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
     if axes is None:
@@ -51,6 +78,8 @@ def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
     else:
         t = cp.fft.fft2(ishiftfunc(image, axes=axes), axes=axes, norm=norm)
         return shiftfunc(t, axes=axes)
+
+
 
 
 
