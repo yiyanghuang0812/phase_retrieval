@@ -1,0 +1,18 @@
+Metadata-Version: 2.2
+Name: lina
+Version: 0.1.0
+Summary: Wavefront sensing and control algorithms and tools being developed in UASAL
+Author: Kevin Derby
+Author-email: <derbyk@arizona.edu>
+Keywords: python,lina,wfsc,wfs&c,wavefront,sensing,control
+Classifier: Development Status :: Alpha-0.1.0
+Classifier: Programming Language :: Python :: 3
+License-File: LICENSE
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: keywords
+Dynamic: summary
+
+Wavefront sensing and control algorithms and tools being developed in UASAL

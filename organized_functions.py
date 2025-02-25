@@ -2,7 +2,7 @@
 
 
 import numpy as np
-import numpy as cp  # no GPU, so it's been changed from 'import cupy as cp'
+import cupy as cp  # no GPU, so it's been changed from 'import cupy as cp'
 import matplotlib.pyplot as plt
 
 import hcipy as hp
@@ -43,42 +43,6 @@ def get_defocus_probes(fitmask, vals_waves):
     zmodes = zernike.arbitrary_basis(fitmask, nterms=4, outside=0) # give the bases of the first 4 zernike polynomials inside 'fitmask', and set the data outside the mask to be 0
     return cp.exp(1j*zmodes[-1]*2*cp.pi*cp.asarray(vals_waves)[:,None,None]) # the map having data equal to e^(j2πn*defocus_phase)
 
-# This function is used to calculate the wavefront and intensity maps on the image plane.
-# pupil: P * P binary matrix showing the pupil region.
-# probes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
-# wavefront: P * P matrix showing the wavefront introduced by the mirror shape error.
-def forward_model(pupil, probes, wavefront):
-    xp = get_array_module(wavefront) # get the hardware used for data computation
-    Epupils = pupil * wavefront * probes # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
-    Epupils /= xp.mean(xp.abs(Epupils),axis=(-2,-1))[:,None,None] # divide pupil data by the mean of each layer for normalization
-    Efocals = fft2_shiftnorm(Epupils, axes=(-2,-1)) # wavefront at the image plane
-    Ifocals = xp.abs(Efocals)**2 # intensity at the image plane
-    return Ifocals, Efocals, Epupils
-
-# This function is used to do Fast Fourier Transform for the image.
-# image: it's usually a P * P matrix showing the wavefront at the pupil.
-# axes: the dimensions that implement FFT. Default choice 'None' equals to (-2, -1).
-# norm: normalization method. The default choice is orthogonal. It is 'ortho'.
-# shift: indicate if the image needs to be shifted for the FFT. The default is 'True'.
-def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
-    if axes is None:
-        axes = (-2, -1) # the last 2 dimensions
-    if isinstance(image, np.ndarray): # check if 'image' is numpy array
-        xp = np
-    else:
-        xp = cp
-    if shift: # check if it requires shifting 'image'
-        shiftfunc = xp.fft.fftshift # centralize the image
-        ishiftfunc = xp.fft.ifftshift # decentralize the image
-    else:
-        shiftfunc = ishiftfunc = lambda x, axes=None: x # use 'lambda' to create a function who has 2 input parameters: x, axes (default=None), the output is 'x'
-    if isinstance(image, np.ndarray): # implement FFT according to the data type of 'image'
-        t = np.fft.fft2(ishiftfunc(image, axes=axes), axes=axes, norm=norm)
-        return shiftfunc(t,axes=axes)
-    else:
-        t = cp.fft.fft2(ishiftfunc(image, axes=axes), axes=axes, norm=norm)
-        return shiftfunc(t, axes=axes)
-
 
 
 
@@ -111,7 +75,7 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
             ph0 = np.zeros(len(modes)) # 0 phase
             init_params = np.concatenate([amp0, ph0], axis=0) # 1D amplitude + phase
     # Give weights for fitting data. It's an x * H * H tensor.
-    weights = 1/(Imeas + wreg) * get_han2d_sq(Imeas[0].shape[0], fraction=0.7) # the reciprocal of the amplitude weakens the impact of the central region, while the Hanning window restricts the scope and adjusts the weights
+    weights = 1/(Imeas + wreg) * get_han2d_sq(Imeas[0].shape[0], fraction=0.7, xp=xp) # the reciprocal of the amplitude weakens the impact of the central region, while the Hanning window restricts the scope and adjusts the weights
     weights /= np.max(weights,axis=(-2,-1))[:,None,None] # normalization
     # Give fitting boundaries for the to-be-fitted coefficients.
     if bounds:
@@ -195,7 +159,7 @@ def gauss_convolve(image, sigma, force_real=True):
 # shape: (rows, cols) showing numbers of rows and columns of the kernel.
 # cenyx: [y x] showing central coordinates of the gaussian distribution in the kernel.
 # xp: numpy or cupy that is used for calculation. The default is 'np'.
-def get_gauss(sigma, shape, cenyx=None, xp=np):
+def get_gauss(sigma, shape, cenyx=None, xp=cp):
     if cenyx is None:
         cenyx = xp.asarray([(shape[0])/2., (shape[1])/2.]) # central coordinates of the kernel
     yy, xx = xp.indices(shape).astype(float) - cenyx[:,None,None] # 'xp.indices().astype()' generates 2 arrays showing y and x coordinates in specific data type
@@ -239,7 +203,8 @@ def ifft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
 # This function gives a Hanning window for smoothing the image.
 # N: side length of the mask.
 # fraction: the coverage ratio of the Hanning window in a single direction. 1 for the inscribed circle (default); sqrt(2) for the circumscribed circle.
-def get_han2d_sq(N, fraction=1.):
+# xp: the type of the hardware used by computation, which should be 'np' or 'cp'.
+def get_han2d_sq(N, fraction=1., xp=np):
     x = xp.linspace(-N / 2., N / 2., num=N)
     rmax = N / 2. * fraction # radius of the Hanning window
     scaled = (1 - x / rmax) * xp.pi / 2.
@@ -287,9 +252,6 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
     # Calculate the error. 'lambdap * xp.sum(params ** 2)' is the L2 regularization term, which penalizes the large parameter values, effectively reducing the overfitting risk. 'lambdap' controls the strength of regularization penalty.
     err = get_err(Imeas, Imodel, weights) + lambdap * xp.sum(params ** 2)
 
-
-
-
     # gradient
     if fit_amp:
         gradA, gradphi = get_grad(Imeas, Imodel, Efocals, Eprobes, A, phi, weights, fit_amp=True)  # [mask]
@@ -318,6 +280,42 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
     return err, grad_Aphi
 
 
+# This function is used to calculate the wavefront and intensity maps on the image plane.
+# pupil: P * P binary matrix showing the pupil region.
+# probes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
+# wavefront: P * P matrix showing the wavefront introduced by the mirror shape error.
+def forward_model(pupil, probes, wavefront):
+    xp = get_array_module(wavefront) # get the hardware used for data computation
+    Epupils = pupil * wavefront * probes # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
+    Epupils /= xp.mean(xp.abs(Epupils),axis=(-2,-1))[:,None,None] # divide pupil data by the mean of each layer for normalization
+    Efocals = fft2_shiftnorm(Epupils, axes=(-2,-1)) # wavefront at the image plane
+    Ifocals = xp.abs(Efocals)**2 # intensity at the image plane
+    return Ifocals, Efocals, Epupils
+
+# This function is used to do Fast Fourier Transform for the image.
+# image: it's usually a P * P matrix showing the wavefront at the pupil.
+# axes: the dimensions that implement FFT. Default choice 'None' equals to (-2, -1).
+# norm: normalization method. The default choice is orthogonal. It is 'ortho'.
+# shift: indicate if the image needs to be shifted for the FFT. The default is 'True'.
+def fft2_shiftnorm(image, axes=None, norm='ortho', shift=True):
+    if axes is None:
+        axes = (-2, -1) # the last 2 dimensions
+    if isinstance(image, np.ndarray): # check if 'image' is numpy array
+        xp = np
+    else:
+        xp = cp
+    if shift: # check if it requires shifting 'image'
+        shiftfunc = xp.fft.fftshift # centralize the image
+        ishiftfunc = xp.fft.ifftshift # decentralize the image
+    else:
+        shiftfunc = ishiftfunc = lambda x, axes=None: x # use 'lambda' to create a function who has 2 input parameters: x, axes (default=None), the output is 'x'
+    if isinstance(image, np.ndarray): # implement FFT according to the data type of 'image'
+        t = np.fft.fft2(ishiftfunc(image, axes=axes), axes=axes, norm=norm)
+        return shiftfunc(t,axes=axes)
+    else:
+        t = cp.fft.fft2(ishiftfunc(image, axes=axes), axes=axes, norm=norm)
+        return shiftfunc(t, axes=axes)
+
 # !!!
 # This function is used to calculate the error between the predicted PSFs and measured PSFs. It comes from Eq. (12) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.
 # Imeas: x * H * H measured PSFs.
@@ -330,9 +328,6 @@ def get_err(Imeas, Imodel, weights):
     t2 = xp.sum(weights * Imeas**2, axis=(-2,-1))
     t3 = xp.sum(weights * Imodel**2, axis=(-2,-1))
     return 1 - 1/K * np.sum(t1/(t2*t3), axis=0) # Eq. (12)
-
-
-
 
 # !!!
 # This function is used to calculate the gradient of the error for the following iteration. The primary component comes from Eq. (A1) of paper 'Amplitude metrics for field retrieval with hard-edged and uniformly illuminated apertures'.

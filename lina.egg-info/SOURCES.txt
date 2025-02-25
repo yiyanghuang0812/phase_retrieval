@@ -1,0 +1,7 @@
+LICENSE
+README.md
+setup.py
+lina.egg-info/PKG-INFO
+lina.egg-info/SOURCES.txt
+lina.egg-info/dependency_links.txt
+lina.egg-info/top_level.txt
