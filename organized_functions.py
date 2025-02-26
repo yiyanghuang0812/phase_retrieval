@@ -112,25 +112,25 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
                         Eprobes, weights, Imeas, N, reg, modes_cp, fit_amp),
                         method='L-BFGS-B', jac=True, bounds=bounds,
                         tol=tol, options={'ftol' : tol, 'gtol' : tol, 'maxls' : 100})
-
+    fitdict['x'] = cp.asarray(fitdict['x'])
 
     # construct amplitude and phase
-    phase_est = np.zeros(fitmask.shape)
-    amp_est = np.zeros(fitmask.shape)
+    phase_est = cp.zeros(fitmask.shape)
+    amp_est = cp.zeros(fitmask.shape)
 
     if fit_amp:
         if modes is None:
             phase_est[fitmask] = fitdict['x'][N:]
             amp_est[fitmask] = fitdict['x'][:N]
         else:
-            phase_est = np.sum(fitdict['x'][N:,None,None] * modes, axis=0)
-            amp_est = np.sum(fitdict['x'][:N,None,None] * modes, axis=0)
+            phase_est = cp.sum(fitdict['x'][N:,None,None] * modes, axis=0)
+            amp_est = cp.sum(fitdict['x'][:N,None,None] * modes, axis=0)
     else:
         if modes is None:
             phase_est[fitmask] = fitdict['x'][:N]
             amp_est = None
         else:
-            phase_est = np.sum(fitdict['x'][:N,None,None] * modes, axis=0)
+            phase_est = cp.sum(fitdict['x'][:N,None,None] * modes, axis=0)
             amp_est = None
 
     return {
