@@ -268,21 +268,19 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, spectrum, weights, Imeas, N, la
 # wavefront: P * P matrix showing the wavefront introduced by the mirror shape error.
 def forward_model(pupil, probes, spectrum, wavefront):
     xp = get_array_module(wavefront) # get the hardware used for data computation
-    sampling_rate = probes.shape[0] # number of wavelengths
-    if sampling_rate == spectrum.shape[0]:
-        
-        for i in range(sampling_rate):
-            Epupils = pupil * wavefront * probes[i]  # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
-
-
+    spectrum /= xp.sum(spectrum) # weight normalization
+    if probes.shape[0] == spectrum.shape[0]:
+        Epupils = np.zeros_like((probes.shape[2],probes.shape[3]))
+        Efocals = Epupils
+        Ifocals = Epupils
+        for i in range(probes.shape[0]):
+            Epupils0 = pupil * wavefront * probes[i]  # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
+            Epupils0 /= xp.mean(xp.abs(Epupils0), axis=(-2, -1))[:, None, None]  # divide pupil data by the mean of each layer for normalization
+            Epupils = Epupils + spectrum[i] * Epupils0
+            Efocals = Efocals + spectrum[i] * fft2_shiftnorm(Epupils, axes=(-2,-1)) # wavefront at the image plane
+            Ifocals = Ifocals + spectrum[i] * xp.abs(Efocals) ** 2  # intensity at the image plane
     else:
         raise TypeError('Sampling rate and wavelength are not compatible')
-
-
-
-    Epupils /= xp.mean(xp.abs(Epupils),axis=(-2,-1))[:,None,None] # divide pupil data by the mean of each layer for normalization
-    Efocals = fft2_shiftnorm(Epupils, axes=(-2,-1)) # wavefront at the image plane
-    Ifocals = xp.abs(Efocals)**2 # intensity at the image plane
     return Ifocals, Efocals, Epupils
 
 # This function is used to do Fast Fourier Transform for the image.
