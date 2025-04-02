@@ -50,11 +50,12 @@ def get_defocus_probes(fitmask, vals_waves):
 # reg: the constant controlling the strength of regularization penalty to avoid overfitting in error and gradient.
 # wreg: the parameter used to prevent infinite weights calculated from the reciprocal of 0 intensity.
 # Eprobes: x * P * P tensor showing the extra wavefront at the pupil introduced by the defocus.
+# spectrum: the weights showing the spectrum shape in the wavelength range.
 # init_params: initial values of the to-be-fitted parameters. It's a vector. Its length is either the pixel number of the pupil region or the number of Zernike terms.
 # bounds: indicate if we need to set boundaries for fitting coefficients. It should be either 'True' or 'False'.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
-def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=None, bounds=True, modes=None, fit_amp=True):
+def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, spectrum, init_params=None, bounds=True, modes=None, fit_amp=True):
     xp = get_array_module(Imeas) # get the type of the hardware used by computation
     if modes is None: # determine the method used to fit the wavefront at the pupil
         N = np.count_nonzero(fitmask) # give pixel numbers of data fitting
@@ -102,7 +103,7 @@ def run_phase_retrieval(Imeas, fitmask, tol, reg, wreg, Eprobes, init_params=Non
     # 'tol' is the tolerance. When the error is smaller than 'tol', the iteration will terminate.
     # 'options' gives extra tolerances for terminating the iteration. 'ftol': tolerance of the error difference in 2 adjacent iterations; 'gtol': tolerance of the norm of the gradient; 'maxls': maximum iteration times.
     fitdict = minimize(errfunc, init_params, args=(fitmask_cp, fitmask_cp,
-                        Eprobes, weights, Imeas, N, reg, modes_cp, fit_amp),
+                        Eprobes, spectrum, weights, Imeas, N, reg, modes_cp, fit_amp),
                         method='L-BFGS-B', jac=True, bounds=bounds,
                         tol=tol, options={'ftol' : tol, 'gtol' : tol, 'maxls' : 100})
     fitdict['x'] = cp.asarray(fitdict['x']) # optimized coefficients of the wavefront
@@ -206,13 +207,14 @@ def get_han2d_sq(N, fraction=1., xp=np):
 # pupil: P * P binary matrix showing the pupil region.
 # mask: P * P binary mask showing the pupil region.
 # Eprobes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
+# spectrum: the weights showing the spectrum shape in the wavelength range.
 # weights: x * H * H tensor determining the influences of different components in comparing the differences between the model result and measured result.
 # Imeas: x * H * H measured intensity maps on the image planes (PSFs).
 # N: number of to-be-fitted parameters.
 # lambdap: the constant controlling the strength of regularization penalty to avoid overfitting in error and gradient.
 # modes: there are 2 data fitting modes. The first one is to fit the wavefront pixel by pixel; the second one is to use zernike polynomials to fit the wavefront layer by layer. It should give either 'None' or bases of zernike polynomials.
 # fit_amp: indicate if we need to fit the amplitude. It should be either 'True' or 'False'.
-def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, modes, fit_amp):
+def get_sqerr_grad(params, pupil, mask, Eprobes, spectrum, weights, Imeas, N, lambdap, modes, fit_amp):
     # Use current values of the to-be-fitted parameters to generate the wavefront at the pupil.
     xp = get_array_module(Eprobes) # get the type of the hardware used by computation
     if xp is cp and isinstance(params, np.ndarray): # if there's GPU and the to-be-fitted coefficients are saved in numpy array
@@ -236,7 +238,7 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
         phi = xp.sum(modes * params_phase[:, None, None], axis=0) # do the same thing to phase 'phi'
     Eab = A * np.exp(1j * phi) # mirror shape error (wavefront) predicted by the last iteration
     # Use the forward model, pupil wavefront and defocus wavefronts to calculate the PSFs on the image planes.
-    Imodel, Efocals, Epupils = forward_model(pupil, Eprobes, Eab)
+    Imodel, Efocals, Epupils = forward_model(pupil, Eprobes, spectrum, Eab)
 
     # Calculate the error. 'lambdap * xp.sum(params ** 2)' is the L2 regularization term working for error, which penalizes the large parameter values, effectively reducing the overfitting risk. 'lambdap' controls the strength of regularization penalty.
     err = get_err(Imeas, Imodel, weights) + lambdap * xp.sum(params ** 2)
@@ -262,10 +264,22 @@ def get_sqerr_grad(params, pupil, mask, Eprobes, weights, Imeas, N, lambdap, mod
 # This function is used to calculate the wavefront and intensity maps on the image plane.
 # pupil: P * P binary matrix showing the pupil region.
 # probes: x * P * P tensor showing extra wavefronts introduced by different defocus magnitudes.
+# spectrum: the weights showing the spectrum shape in the wavelength range.
 # wavefront: P * P matrix showing the wavefront introduced by the mirror shape error.
-def forward_model(pupil, probes, wavefront):
+def forward_model(pupil, probes, spectrum, wavefront):
     xp = get_array_module(wavefront) # get the hardware used for data computation
-    Epupils = pupil * wavefront * probes # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
+    sampling_rate = probes.shape[0] # number of wavelengths
+    if sampling_rate == spectrum.shape[0]:
+        
+        for i in range(sampling_rate):
+            Epupils = pupil * wavefront * probes[i]  # layer-by-layer multiplication which obtains an x * P * P tensor showing the OPD at the pupil
+
+
+    else:
+        raise TypeError('Sampling rate and wavelength are not compatible')
+
+
+
     Epupils /= xp.mean(xp.abs(Epupils),axis=(-2,-1))[:,None,None] # divide pupil data by the mean of each layer for normalization
     Efocals = fft2_shiftnorm(Epupils, axes=(-2,-1)) # wavefront at the image plane
     Ifocals = xp.abs(Efocals)**2 # intensity at the image plane

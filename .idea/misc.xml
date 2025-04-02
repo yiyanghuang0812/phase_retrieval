@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="phase_retrieval" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="phase_retrieval" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="phase_retrieval_LFAST" project-jdk-type="Python SDK" />
 </project>
